@@ -407,7 +407,15 @@ const char *resetReasonStr(esp_reset_reason_t r) {
     case ESP_RST_DEEPSLEEP: return "deepsleep";
     case ESP_RST_BROWNOUT:  return "brownout";
     case ESP_RST_SDIO:      return "sdio";
-    default:                return "unknown";
+    default: {
+      // Don't collapse unmapped IDF reset codes (e.g. CPU_LOCKUP, USB, JTAG on
+      // newer IDF) to a bare "unknown" -- keep the numeric code so a new/rare
+      // reason is still attributable. Written once at boot, so a static buffer
+      // is safe.
+      static char buf[16];
+      snprintf(buf, sizeof(buf), "unknown_%d", (int)r);
+      return buf;
+    }
   }
 }
 
@@ -416,7 +424,7 @@ void setup() {
   while (!Serial)  // Wait for the Serial port to initialize (typically used in Arduino to ensure the Serial monitor is ready)
     ;
   g_resetReason = resetReasonStr(esp_reset_reason());
-  Serial.printf("[boot] reset_reason=%s\n", g_resetReason);
+  Serial.printf("[boot] reset_reason=%s\n", (const char *)g_resetReason);
   if (!EEPROM.begin(512)) {
     Serial.println("EEPROM init failed!");
     while (1) {
@@ -954,14 +962,19 @@ void pureScale() {
   }
 
   // Stall watchdog: a live load cell's raw 24-bit value dithers on every
-  // conversion (~10/s). If the raw value is byte-identical for >8 s it's frozen
-  // or railed (0 / 0xFFFFFF) -- the "weight stops being collected" failure
+  // conversion (the ADS1232/HX711 runs ~10 samples/s at the configured rate). If
+  // the raw value is byte-identical for >8 s it's frozen or railed (a rail to 0
+  // freezes rawValue at the last good value via the driver's data>0 guard, so it
+  // still reads as "unchanged") -- the "weight stops being collected" failure
   // (suspected thermal/analog) that an in-firmware ADC power-cycle can't fix.
   // Surface it (flag + one-shot log) instead of silently streaming a stuck value.
   // Skipped while a deliberate ADC power-cycle recovery is in progress (raw is
-  // frozen by definition then, which is not the failure we're detecting), and
-  // the window is reset on resume. Checked every 250 ms (not every loop) -- the
-  // ADC only produces ~10 samples/s, so polling faster just burns CPU/heat.
+  // frozen by definition then); the window is re-seeded on the first 250 ms poll
+  // after recovery clears (via the t_rawChange==0 sentinel). Blind spot: a
+  // *perpetual* recovery loop (recovery every ~5 s) keeps re-seeding so this flag
+  // may never trip -- the climbing adc_recovery_count in the status frame is the
+  // signal for that case. Checked every 250 ms (not every loop): the ADC only
+  // produces ~10 samples/s, so polling faster just burns CPU/heat.
   {
     static long lastRaw = 0x7FFFFFFFL;
     static unsigned long t_rawChange = 0;   // 0 = (re)seed window on next sample
@@ -1339,17 +1352,30 @@ void loop() {
   }
 
   // SoC-temperature sampler + peak tracking (diagnosing the suspected thermal
-  // stall). Runs every 2 s regardless of WiFi/charging; prints a summary every
-  // 10 s so a serial capture during a stress run shows the temp trend, and feeds
-  // g_socTempC/Max into the WS status frame.
+  // stall). Runs every 2 s regardless of WiFi state or power-supply mode
+  // (USB/battery); prints a summary every 10 s so a serial capture during a
+  // stress run shows the temp trend, and feeds g_socTempC/Max into the WS
+  // status frame.
   {
     static unsigned long t_tempSample = 0, t_tempLog = 0;
     unsigned long nowMs = millis();
     if (nowMs - t_tempSample >= 2000) {
       t_tempSample = nowMs;
       float t = temperatureRead();
-      g_socTempC = t;
-      if (t > g_socTempMaxC) g_socTempMaxC = t;
+      // temperatureRead() returns NaN if the SoC sensor is unavailable. Don't
+      // poison g_socTempC/Max (NaN would serialize as invalid JSON and NaN
+      // comparisons would freeze the peak); keep the last valid value and log
+      // once so the failure is visible rather than silent.
+      if (!isnan(t)) {
+        g_socTempC = t;
+        if (t > g_socTempMaxC) g_socTempMaxC = t;
+      } else {
+        static bool tempFailLogged = false;
+        if (!tempFailLogged) {
+          tempFailLogged = true;
+          Serial.println("[temp] temperatureRead() returned NaN -- SoC sensor unavailable");
+        }
+      }
       if (nowMs - t_tempLog >= 10000) {
         t_tempLog = nowMs;
         Serial.printf("[temp] soc=%.1fC max=%.1fC stalls=%lu last_stall=%lums stall_temp=%.1fC heap=%lu\n",

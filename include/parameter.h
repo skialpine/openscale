@@ -193,25 +193,32 @@ static const unsigned long ZERO_DISPLAY_MISMATCH_TIMEOUT = 1500;
 static const float ZERO_DISPLAY_MISMATCH_THRESHOLD = 0.5;
 static const uint8_t ADC_ERROR_RECOVERY_COUNT = 2;
 static bool b_adc_recovery_active = false;
-static uint8_t i_adc_recovery_count = 0;
+// volatile: incremented on the main loop (ADC power-cycle recovery) and now also
+// read in the WS status frame (which can be built on the AsyncTCP task).
+static volatile uint8_t i_adc_recovery_count = 0;
 //bool b_tempDisablePowerOff = true;
 
 // Instrumentation for diagnosing the "weight stops being collected" failure
-// under sustained load (suspected thermal). b_weightStalled is set by the
-// pureScale() stall watchdog when the ADC raw value is frozen/railed; written on
-// the main loop, read in the WS status frame. g_resetReason is the last reset
-// cause (esp_reset_reason()) captured at boot, surfaced for fleet telemetry.
+// under sustained load (suspected thermal). These are all written on the main
+// loop and read by the WS status frame, which is built BOTH on the main loop
+// (periodic) AND on the AsyncTCP task (command responses) -- so the read crosses
+// a task boundary. volatile prevents the AsyncTCP reader caching a stale value
+// (single aligned scalars => the load/store is atomic on Xtensa, no mutex
+// needed). b_weightStalled is set by the pureScale() stall watchdog when the ADC
+// raw value is frozen/railed.
 volatile bool b_weightStalled = false;
-const char *g_resetReason = "unknown";
-// Peak/last-event stats since boot (survive nothing; reset on reboot, which
-// g_resetReason then explains). Sampled on the main loop, read in the WS status
-// frame. g_socTempMaxC = highest SoC die temp seen; the *_stall_* fields capture
-// the most recent stall so the failure is visible after the fact.
+// volatile for the same cross-task reason; written once at boot in setup().
+volatile const char *g_resetReason = "unknown";
+// Peak/last-event stats since boot (no NVS; reset on reboot, which g_resetReason
+// then explains). g_socTempMaxC = highest SoC die temp seen. The *_stall_*
+// fields capture the most recent stall so the failure is visible after the fact
+// -- consumers must treat last_stall_temp_c as valid only when g_lastStallMs != 0
+// (0.0 otherwise means "no stall yet", not a real 0 C reading).
 volatile float g_socTempC = 0.0f;          // latest SoC temperature (C)
-volatile float g_socTempMaxC = -100.0f;    // peak SoC temperature since boot (C)
+volatile float g_socTempMaxC = -100.0f;    // peak SoC temperature since boot (C); -100 = no valid sample yet
 volatile uint32_t g_stallCount = 0;        // number of weight-stall events since boot
 volatile unsigned long g_lastStallMs = 0;  // millis() of the last stall onset (0 = none)
-volatile float g_lastStallTempC = 0.0f;    // SoC temp when the last stall began
+volatile float g_lastStallTempC = 0.0f;    // SoC temp when the last stall began (valid only if g_lastStallMs != 0)
 
 bool b_negativeWeight = false;
 
