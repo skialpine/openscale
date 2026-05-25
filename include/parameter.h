@@ -193,9 +193,12 @@ static const unsigned long ZERO_DISPLAY_MISMATCH_TIMEOUT = 1500;
 static const float ZERO_DISPLAY_MISMATCH_THRESHOLD = 0.5;
 static const uint8_t ADC_ERROR_RECOVERY_COUNT = 2;
 static bool b_adc_recovery_active = false;
-// volatile: incremented on the main loop (ADC power-cycle recovery) and now also
-// read in the WS status frame (which can be built on the AsyncTCP task).
-static volatile uint8_t i_adc_recovery_count = 0;
+// volatile: written on the main loop -- incremented on each ADC power-cycle
+// recovery, reset to 0 by resetAdcRecoveryState() -- and read in the WS status
+// frame (which can be built on the AsyncTCP task). uint32_t (not uint8_t) so a
+// *perpetual* recovery loop -- the one failure mode the stall watchdog is blind
+// to -- keeps counting truthfully over a long soak instead of saturating at 255.
+static volatile uint32_t i_adc_recovery_count = 0;
 //bool b_tempDisablePowerOff = true;
 
 // Instrumentation for diagnosing the "weight stops being collected" failure
@@ -219,6 +222,16 @@ volatile float g_socTempMaxC = -100.0f;    // peak SoC temperature since boot (C
 volatile uint32_t g_stallCount = 0;        // number of weight-stall events since boot
 volatile unsigned long g_lastStallMs = 0;  // millis() of the last stall onset (0 = none)
 volatile float g_lastStallTempC = 0.0f;    // SoC temp when the last stall began (valid only if g_lastStallMs != 0)
+
+// Snapshot of the stopWatch state, refreshed once per main-loop iteration. The
+// WS status frame is built BOTH on the main loop AND on the AsyncTCP task
+// (command responses); stopWatch is a multi-field object (running flag + start
+// ts + accumulator) also mutated from BLE/USB, so reading it directly off the
+// AsyncTCP task can tear (CLAUDE.md). The status frame reads these single
+// aligned volatiles instead. g_timerElapsed carries stopWatch.elapsed() in its
+// configured resolution (SECONDS) -- it is the WS "timer_seconds" field.
+volatile bool g_timerRunning = false;
+volatile unsigned long g_timerElapsed = 0;
 
 bool b_negativeWeight = false;
 

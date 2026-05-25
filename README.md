@@ -182,9 +182,36 @@ Status frame shape:
   "soft_sleep": false,
   "events_enabled": true,
   "rate_hz": 10,
-  "interval_ms": 100
+  "interval_ms": 100,
+  "soc_temp_c": 33.3,
+  "soc_temp_max_c": 41.2,
+  "weight_stalled": false,
+  "stall_count": 0,
+  "last_stall_ms": 0,
+  "last_stall_temp_c": 0.0,
+  "adc_recovery_count": 0,
+  "reset_reason": "poweron"
 }
 ```
+
+The trailing fields are diagnostic telemetry (added to investigate a thermal
+"weight stops being collected" failure under sustained load):
+
+- `soc_temp_c` / `soc_temp_max_c` — current and peak ESP32-S3 die temperature
+  (°C) since boot. `soc_temp_max_c` is `-100` until the first valid sample.
+- `weight_stalled` — `true` while the load-cell raw value has been frozen/railed
+  for >8 s (readings have stopped), cleared when they resume.
+- `stall_count` — number of stall events since boot; `last_stall_ms` is the
+  `millis()` of the most recent stall onset (`0` = none yet) and
+  `last_stall_temp_c` is the die temp at that moment (valid only when
+  `last_stall_ms != 0`).
+- `adc_recovery_count` — number of ADC power-cycle recoveries since boot. A
+  climbing value is the signal for a perpetual-recovery loop (the case
+  `weight_stalled` is blind to).
+- `reset_reason` — why the SoC last reset (`poweron`, `panic`, `brownout`,
+  `task_wdt`, …), so a reboot mid-soak is explained.
+
+These reset on reboot (not persisted to NVS).
 
 For backwards compatibility, WiFi only sends weight snapshots by default. A
 client must send `events on` before periodic status, local scale button presses,

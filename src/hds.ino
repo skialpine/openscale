@@ -986,6 +986,7 @@ void pureScale() {
       t_rawChange = 0;
     } else if (millis() - t_stallCheck >= 250) {
       unsigned long nowMs = millis();
+      if (nowMs == 0) nowMs = 1;  // 0 is the reseed sentinel for t_rawChange; never store it as a real timestamp (boot/rollover)
       t_stallCheck = nowMs;
       long raw = scale.getDebugInfo().rawValue;
       if (t_rawChange == 0) {
@@ -1019,9 +1020,7 @@ void pureScale() {
              millis() - t_lastScaleRecovery > 5000) {
     Serial.println("Scale ADC timeout. Power cycling ADC.");
     b_adc_recovery_active = true;
-    if (i_adc_recovery_count < 255) {
-      i_adc_recovery_count++;
-    }
+    i_adc_recovery_count++;  // uint32_t: counts truthfully, won't wrap in any realistic runtime
     scale.powerDown();
     delay(5);
     scale.powerUp();
@@ -1346,6 +1345,14 @@ void loop() {
   // here on the loop task rather than racing peripheral drivers.
   processWsPendingCmds();
 
+  // Snapshot the multi-field stopWatch into aligned volatiles on the loop task so
+  // the WS status frame (built on the AsyncTCP task for command responses) never
+  // reads stopWatch cross-task. Done after the drain above so a just-applied
+  // timer start/stop/zero is reflected. elapsed() is in the configured
+  // resolution (SECONDS).
+  g_timerRunning = stopWatch.isRunning();
+  g_timerElapsed = (unsigned long)stopWatch.elapsed();
+
   if (b_powerOff){
     shut_down_now_nobeep();
     return;
@@ -1362,11 +1369,11 @@ void loop() {
     if (nowMs - t_tempSample >= 2000) {
       t_tempSample = nowMs;
       float t = temperatureRead();
-      // temperatureRead() returns NaN if the SoC sensor is unavailable. Don't
-      // poison g_socTempC/Max (NaN would serialize as invalid JSON and NaN
-      // comparisons would freeze the peak); keep the last valid value and log
-      // once so the failure is visible rather than silent.
-      if (!isnan(t)) {
+      // temperatureRead() returns NaN if the SoC sensor is unavailable. Reject
+      // any non-finite value (NaN or +/-inf): NaN serializes as invalid JSON and
+      // a non-finite compare would freeze the peak. Keep the last valid value and
+      // log once so the failure is visible rather than silent.
+      if (isfinite(t)) {
         g_socTempC = t;
         if (t > g_socTempMaxC) g_socTempMaxC = t;
       } else {

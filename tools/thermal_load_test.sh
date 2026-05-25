@@ -68,13 +68,14 @@ def first_status(w, secs):
 ws=connect()
 peak=-999.0; total_stalls=0; reboots=0; max_recov=0
 prev_stalls=None; prev_max=None; last_reset="?"
+no_status_streak=0; max_no_status_streak=0
 first=True
 while time.time()<end:
     st = first_status(ws, 9 if first else 2.5); first=False
     if st:
         soc=st.get('soc_temp_c'); mx=st.get('soc_temp_max_c'); sc=st.get('stall_count',0) or 0
         recov=st.get('adc_recovery_count',0) or 0; rr=st.get('reset_reason','?')
-        last_reset=rr
+        last_reset=rr; no_status_streak=0
         if isinstance(mx,(int,float)) and mx>peak: peak=mx
         if recov>max_recov: max_recov=recov
         # reboot heuristic: since-boot counters or peak dropped vs last frame
@@ -89,7 +90,9 @@ while time.time()<end:
             st.get('last_stall_ms'), st.get('last_stall_temp_c'), rr, st.get('grams'),
             st.get('charging'), flag), flush=True)
     else:
-        print("[%s] NO STATUS FRAME (reconnecting)"%time.strftime('%H:%M:%S'), flush=True)
+        no_status_streak+=1
+        if no_status_streak>max_no_status_streak: max_no_status_streak=no_status_streak
+        print("[%s] NO STATUS FRAME (reconnecting; streak=%d)"%(time.strftime('%H:%M:%S'),no_status_streak), flush=True)
         try: ws.close()
         except Exception: pass
         try: ws=connect(); first=True
@@ -97,9 +100,13 @@ while time.time()<end:
     time.sleep(58)
 try: ws.close()
 except Exception: pass
-result = "PASS" if (total_stalls==0 and max_recov==0 and reboots==0) else "FAIL"
-print("SUMMARY peak_temp=%.1fC total_stalls=%d adc_recoveries=%d reboots=%d last_reset=%s RESULT=%s"%(
-    peak, total_stalls, max_recov, reboots, last_reset, result), flush=True)
+# Sustained loss of status frames means the scale stopped answering -- exactly
+# the "weight stops" failure being hunted -- so it must FAIL, not silently PASS
+# because the stall/reboot counters simply stopped advancing.
+visibility_lost = max_no_status_streak >= 3
+result = "PASS" if (total_stalls==0 and max_recov==0 and reboots==0 and not visibility_lost) else "FAIL"
+print("SUMMARY peak_temp=%.1fC total_stalls=%d adc_recoveries=%d reboots=%d max_no_status_streak=%d last_reset=%s RESULT=%s"%(
+    peak, total_stalls, max_recov, reboots, max_no_status_streak, last_reset, result), flush=True)
 PY
 
 echo "[thermal] load + telemetry running ${RDUR}s @ $(ts)"
@@ -111,3 +118,20 @@ echo "===== WS (drops) ====="; tail -12 "$LOG/ws.log"
 echo "===== USB ====="; tail -6 "$LOG/usb.log" 2>/dev/null || echo "(USB disabled)"
 echo "===== churn ====="; tail -3 "$LOG/churn.log"
 echo "===== mDNS ====="; tail -3 "$LOG/mdns.log"
+
+# Verdict -> exit code. A green run requires BOTH the telemetry monitor's
+# RESULT=PASS *and* that every load generator stayed alive: if a driver crashed
+# (Traceback in its log) the scale was under-stressed, so the run is invalid even
+# if no stall was seen. A missing SUMMARY means the monitor itself died (caught
+# by the RESULT=PASS grep failing). This makes the script usable as a CI gate.
+fail=0
+if ! grep -q "RESULT=PASS" "$LOG/telemetry.log"; then
+  echo "[thermal] FAIL: telemetry verdict not PASS (stall/reboot/recovery, lost visibility, or monitor crashed)"; fail=1
+fi
+for f in usb ws churn mdns; do
+  if [ -f "$LOG/$f.log" ] && grep -q "Traceback" "$LOG/$f.log"; then
+    echo "[thermal] FAIL: load generator '$f' crashed -- scale was under-stressed (see $LOG/$f.log)"; fail=1
+  fi
+done
+[ "$fail" -eq 0 ] && echo "[thermal] RESULT=PASS" || echo "[thermal] RESULT=FAIL"
+exit "$fail"
