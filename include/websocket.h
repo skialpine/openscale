@@ -183,7 +183,7 @@ void sendWebsocketRateInfo(AsyncWebSocketClient *client, const char *status) {
 }
 
 void sendWebsocketStatus(AsyncWebSocketClient *client, const char *status) {
-  client->printf("{\"type\":\"status\",\"status\":\"%s\",\"protocol_version\":1,\"firmware_version\":\"%s\",\"grams\":%.2f,\"ms\":%lu,\"battery_percent\":%d,\"battery_voltage\":%.2f,\"charging\":%s,\"timer_running\":%s,\"timer_seconds\":%lu,\"display_on\":%s,\"low_power\":%s,\"soft_sleep\":%s,\"events_enabled\":%s,\"rate_hz\":%lu,\"interval_ms\":%lu}",
+  client->printf("{\"type\":\"status\",\"status\":\"%s\",\"protocol_version\":1,\"firmware_version\":\"%s\",\"grams\":%.2f,\"ms\":%lu,\"battery_percent\":%d,\"battery_voltage\":%.2f,\"charging\":%s,\"timer_running\":%s,\"timer_seconds\":%lu,\"display_on\":%s,\"low_power\":%s,\"soft_sleep\":%s,\"events_enabled\":%s,\"rate_hz\":%lu,\"interval_ms\":%lu,\"soc_temp_c\":%.1f,\"soc_temp_max_c\":%.1f,\"weight_stalled\":%s,\"stall_count\":%lu,\"last_stall_ms\":%lu,\"last_stall_temp_c\":%.1f,\"reset_reason\":\"%s\"}",
                  status,
                  FIRMWARE_VER,
                  f_displayedValue,
@@ -198,7 +198,14 @@ void sendWebsocketStatus(AsyncWebSocketClient *client, const char *status) {
                  b_softSleep ? "true" : "false",
                  b_websocketEventsEnabled ? "true" : "false",
                  websocketRateForInterval(weightWebsocketNotifyInterval),
-                 weightWebsocketNotifyInterval);
+                 weightWebsocketNotifyInterval,
+                 g_socTempC,
+                 g_socTempMaxC,
+                 b_weightStalled ? "true" : "false",
+                 (unsigned long)g_stallCount,
+                 g_lastStallMs,
+                 g_lastStallTempC,
+                 g_resetReason);
 }
 
 // Broadcast via printfAll(): it holds the library's client-list mutex and
@@ -211,7 +218,7 @@ void sendWebsocketStatus(AsyncWebSocketClient *client, const char *status) {
 // without blocking the others.
 void sendWebsocketStatusAll(const char *status) {
   if (!b_wifiEnabled || !b_websocketEventsEnabled || websocket.count() == 0) return;
-  websocket.printfAll("{\"type\":\"status\",\"status\":\"%s\",\"protocol_version\":1,\"firmware_version\":\"%s\",\"grams\":%.2f,\"ms\":%lu,\"battery_percent\":%d,\"battery_voltage\":%.2f,\"charging\":%s,\"timer_running\":%s,\"timer_seconds\":%lu,\"display_on\":%s,\"low_power\":%s,\"soft_sleep\":%s,\"events_enabled\":%s,\"rate_hz\":%lu,\"interval_ms\":%lu}",
+  websocket.printfAll("{\"type\":\"status\",\"status\":\"%s\",\"protocol_version\":1,\"firmware_version\":\"%s\",\"grams\":%.2f,\"ms\":%lu,\"battery_percent\":%d,\"battery_voltage\":%.2f,\"charging\":%s,\"timer_running\":%s,\"timer_seconds\":%lu,\"display_on\":%s,\"low_power\":%s,\"soft_sleep\":%s,\"events_enabled\":%s,\"rate_hz\":%lu,\"interval_ms\":%lu,\"soc_temp_c\":%.1f,\"soc_temp_max_c\":%.1f,\"weight_stalled\":%s,\"stall_count\":%lu,\"last_stall_ms\":%lu,\"last_stall_temp_c\":%.1f,\"reset_reason\":\"%s\"}",
                       status,
                       FIRMWARE_VER,
                       f_displayedValue,
@@ -226,7 +233,14 @@ void sendWebsocketStatusAll(const char *status) {
                       b_softSleep ? "true" : "false",
                       b_websocketEventsEnabled ? "true" : "false",
                       websocketRateForInterval(weightWebsocketNotifyInterval),
-                      weightWebsocketNotifyInterval);
+                      weightWebsocketNotifyInterval,
+                      g_socTempC,
+                      g_socTempMaxC,
+                      b_weightStalled ? "true" : "false",
+                      (unsigned long)g_stallCount,
+                      g_lastStallMs,
+                      g_lastStallTempC,
+                      g_resetReason);
 }
 
 void sendWebsocketWeightAll(float grams, unsigned long ms) {

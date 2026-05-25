@@ -392,10 +392,31 @@ void wifi_init() {
 
 MyUsbCallbacks usbCallbacks;
 
+// Map esp_reset_reason() to a short string for boot logging + WS telemetry, so a
+// spontaneous reset (brownout / panic / watchdog) is attributable instead of
+// looking like a clean power-on.
+const char *resetReasonStr(esp_reset_reason_t r) {
+  switch (r) {
+    case ESP_RST_POWERON:   return "poweron";
+    case ESP_RST_EXT:       return "ext";
+    case ESP_RST_SW:        return "sw";
+    case ESP_RST_PANIC:     return "panic";
+    case ESP_RST_INT_WDT:   return "int_wdt";
+    case ESP_RST_TASK_WDT:  return "task_wdt";
+    case ESP_RST_WDT:       return "wdt";
+    case ESP_RST_DEEPSLEEP: return "deepsleep";
+    case ESP_RST_BROWNOUT:  return "brownout";
+    case ESP_RST_SDIO:      return "sdio";
+    default:                return "unknown";
+  }
+}
+
 void setup() {
   Serial.begin(115200);
   while (!Serial)  // Wait for the Serial port to initialize (typically used in Arduino to ensure the Serial monitor is ready)
     ;
+  g_resetReason = resetReasonStr(esp_reset_reason());
+  Serial.printf("[boot] reset_reason=%s\n", g_resetReason);
   if (!EEPROM.begin(512)) {
     Serial.println("EEPROM init failed!");
     while (1) {
@@ -932,6 +953,35 @@ void pureScale() {
     t_lastScaleData = millis();
   }
 
+  // Stall watchdog: a live load cell's raw 24-bit value dithers on every
+  // conversion (~10/s). If the raw value is byte-identical for >8 s it's frozen
+  // or railed (0 / 0xFFFFFF) -- the "weight stops being collected" failure
+  // (suspected thermal/analog) that an in-firmware ADC power-cycle can't fix.
+  // Surface it (flag + one-shot log) instead of silently streaming a stuck value.
+  {
+    static long lastRaw = 0x7FFFFFFFL;
+    static unsigned long t_rawChange = 0;
+    long raw = scale.getDebugInfo().rawValue;
+    unsigned long nowMs = millis();
+    if (t_rawChange == 0) t_rawChange = nowMs;
+    if (raw != lastRaw) {
+      lastRaw = raw;
+      t_rawChange = nowMs;
+      if (b_weightStalled) {
+        b_weightStalled = false;
+        Serial.println("[adc] weight readings resumed");
+      }
+    } else if (!b_weightStalled && nowMs - t_rawChange > 8000) {
+      b_weightStalled = true;
+      g_stallCount++;
+      g_lastStallMs = nowMs;
+      g_lastStallTempC = g_socTempC;
+      Serial.printf("[adc] WEIGHT STALLED #%lu: raw frozen at %ld for >8s soc=%.1fC heap=%lu\n",
+                    (unsigned long)g_stallCount, raw, g_lastStallTempC,
+                    (unsigned long)ESP.getFreeHeap());
+    }
+  }
+
   if (scale.update()) {
     b_newDataReady = true;
     t_lastScaleData = millis();
@@ -1271,6 +1321,27 @@ void loop() {
   if (b_powerOff){
     shut_down_now_nobeep();
     return;
+  }
+
+  // SoC-temperature sampler + peak tracking (diagnosing the suspected thermal
+  // stall). Runs every 2 s regardless of WiFi/charging; prints a summary every
+  // 10 s so a serial capture during a stress run shows the temp trend, and feeds
+  // g_socTempC/Max into the WS status frame.
+  {
+    static unsigned long t_tempSample = 0, t_tempLog = 0;
+    unsigned long nowMs = millis();
+    if (nowMs - t_tempSample >= 2000) {
+      t_tempSample = nowMs;
+      float t = temperatureRead();
+      g_socTempC = t;
+      if (t > g_socTempMaxC) g_socTempMaxC = t;
+      if (nowMs - t_tempLog >= 10000) {
+        t_tempLog = nowMs;
+        Serial.printf("[temp] soc=%.1fC max=%.1fC stalls=%lu last_stall=%lums stall_temp=%.1fC heap=%lu\n",
+                      g_socTempC, g_socTempMaxC, (unsigned long)g_stallCount,
+                      g_lastStallMs, g_lastStallTempC, (unsigned long)ESP.getFreeHeap());
+      }
+    }
   }
 
   if (bleState == CONNECTED && b_requireHeartBeat && millis() - t_firstConnect > HEARTBEAT_TIMEOUT) {

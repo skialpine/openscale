@@ -196,6 +196,23 @@ static bool b_adc_recovery_active = false;
 static uint8_t i_adc_recovery_count = 0;
 //bool b_tempDisablePowerOff = true;
 
+// Instrumentation for diagnosing the "weight stops being collected" failure
+// under sustained load (suspected thermal). b_weightStalled is set by the
+// pureScale() stall watchdog when the ADC raw value is frozen/railed; written on
+// the main loop, read in the WS status frame. g_resetReason is the last reset
+// cause (esp_reset_reason()) captured at boot, surfaced for fleet telemetry.
+volatile bool b_weightStalled = false;
+const char *g_resetReason = "unknown";
+// Peak/last-event stats since boot (survive nothing; reset on reboot, which
+// g_resetReason then explains). Sampled on the main loop, read in the WS status
+// frame. g_socTempMaxC = highest SoC die temp seen; the *_stall_* fields capture
+// the most recent stall so the failure is visible after the fact.
+volatile float g_socTempC = 0.0f;          // latest SoC temperature (C)
+volatile float g_socTempMaxC = -100.0f;    // peak SoC temperature since boot (C)
+volatile uint32_t g_stallCount = 0;        // number of weight-stall events since boot
+volatile unsigned long g_lastStallMs = 0;  // millis() of the last stall onset (0 = none)
+volatile float g_lastStallTempC = 0.0f;    // SoC temp when the last stall began
+
 bool b_negativeWeight = false;
 
 bool b_weight_quick_zero = false;           //Tare后快速显示为0优化
