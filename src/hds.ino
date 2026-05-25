@@ -958,27 +958,42 @@ void pureScale() {
   // or railed (0 / 0xFFFFFF) -- the "weight stops being collected" failure
   // (suspected thermal/analog) that an in-firmware ADC power-cycle can't fix.
   // Surface it (flag + one-shot log) instead of silently streaming a stuck value.
+  // Skipped while a deliberate ADC power-cycle recovery is in progress (raw is
+  // frozen by definition then, which is not the failure we're detecting), and
+  // the window is reset on resume. Checked every 250 ms (not every loop) -- the
+  // ADC only produces ~10 samples/s, so polling faster just burns CPU/heat.
   {
     static long lastRaw = 0x7FFFFFFFL;
-    static unsigned long t_rawChange = 0;
-    long raw = scale.getDebugInfo().rawValue;
-    unsigned long nowMs = millis();
-    if (t_rawChange == 0) t_rawChange = nowMs;
-    if (raw != lastRaw) {
-      lastRaw = raw;
-      t_rawChange = nowMs;
-      if (b_weightStalled) {
-        b_weightStalled = false;
-        Serial.println("[adc] weight readings resumed");
+    static unsigned long t_rawChange = 0;   // 0 = (re)seed window on next sample
+    static unsigned long t_stallCheck = 0;
+    if (b_adc_recovery_active) {
+      // Deliberate ADC power-cycle in progress: raw is frozen by design, not by
+      // the failure we detect. Re-seed the window so we don't false-trip when
+      // streaming resumes.
+      t_rawChange = 0;
+    } else if (millis() - t_stallCheck >= 250) {
+      unsigned long nowMs = millis();
+      t_stallCheck = nowMs;
+      long raw = scale.getDebugInfo().rawValue;
+      if (t_rawChange == 0) {
+        lastRaw = raw;
+        t_rawChange = nowMs;
+      } else if (raw != lastRaw) {
+        lastRaw = raw;
+        t_rawChange = nowMs;
+        if (b_weightStalled) {
+          b_weightStalled = false;
+          Serial.println("[adc] weight readings resumed");
+        }
+      } else if (!b_weightStalled && nowMs - t_rawChange > 8000) {
+        b_weightStalled = true;
+        g_stallCount++;
+        g_lastStallMs = nowMs;
+        g_lastStallTempC = g_socTempC;
+        Serial.printf("[adc] WEIGHT STALLED #%lu: raw frozen at %ld for >8s soc=%.1fC heap=%lu\n",
+                      (unsigned long)g_stallCount, raw, g_lastStallTempC,
+                      (unsigned long)ESP.getFreeHeap());
       }
-    } else if (!b_weightStalled && nowMs - t_rawChange > 8000) {
-      b_weightStalled = true;
-      g_stallCount++;
-      g_lastStallMs = nowMs;
-      g_lastStallTempC = g_socTempC;
-      Serial.printf("[adc] WEIGHT STALLED #%lu: raw frozen at %ld for >8s soc=%.1fC heap=%lu\n",
-                    (unsigned long)g_stallCount, raw, g_lastStallTempC,
-                    (unsigned long)ESP.getFreeHeap());
     }
   }
 
