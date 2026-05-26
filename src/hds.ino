@@ -577,9 +577,16 @@ void setup() {
   //set the calibration value
   //scale.setSamplesInUse(sample[i_sample]);  //设置灵敏度
   
-  // Setup ADS1232 debug callback
+  // Setup ADS1232 debug callback. The callback (in adsDebugCallback above) is
+  // self-throttled to 1 Hz, so the per-conversion firehose is bounded; cheap to
+  // leave on during stress soaks for per-second visibility of raw/smoothed
+  // values, conversion time, sps, signalTimeout/OOR flags. Can still be turned
+  // off at runtime via the "adsdebug off" USB command.
   scale.setDebugCallback(adsDebugCallback);
-  // Debug is off by default, enable with "adsdebug on" command
+  scale.setDebugEnabled(true);
+  // Tighter DOUT-inactive detection (default 100 ms) -- surfaces marginal
+  // analog timing earlier during the thermal-lockup stress hunt.
+  scale.setSignalTimeoutMs(50);
 
   // if (GPIO_power_on_with != BATTERY_CHARGING) {
   //   delay(500);
